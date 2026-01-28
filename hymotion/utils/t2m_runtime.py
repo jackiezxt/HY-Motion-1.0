@@ -1,4 +1,5 @@
 # t2m_runtime.py
+import gc
 import os
 import threading
 import time
@@ -78,8 +79,11 @@ class T2MRuntime:
         if self.disable_prompt_engineering:
             self.prompt_rewriter = None
         else:
+            # 使用懒加载模式，首次调用时才加载 PromptRewriter 模型
             self.prompt_rewriter = PromptRewriter(
-                host=self.prompt_engineering_host, model_path=self.prompt_engineering_model_path
+                host=self.prompt_engineering_host, 
+                model_path=self.prompt_engineering_model_path,
+                lazy_load=True  # 启用懒加载
             )
         # Skip model loading if checkpoint not found
         if self.skip_model_loading:
@@ -107,7 +111,7 @@ class T2MRuntime:
         else:
             print(f">>> T2MRuntime loaded in IP {self.local_ip}, devices={device_info}")
 
-    def load(self):
+    def load(self, lazy_text_encoder: bool = False):
         if self._loaded:
             return
         print(f">>> Loading model from {self.config_path}...")
@@ -117,6 +121,14 @@ class T2MRuntime:
 
         # Use allow_empty_ckpt=True when skip_model_loading is True
         allow_empty_ckpt = self.skip_model_loading
+        
+        # 懒加载模式：启动时不加载文本编码器，首次推理时再加载
+        # 可通过环境变量 LAZY_TEXT_ENCODER=1 启用
+        if lazy_text_encoder or os.environ.get("LAZY_TEXT_ENCODER", "0") == "1":
+            build_text_encoder_now = False
+            print(">>> [FAST MODE] Text encoder will be loaded on first inference")
+        else:
+            build_text_encoder_now = not self.skip_text
 
         if not self.device_ids:
             pipeline = load_object(
@@ -128,7 +140,7 @@ class T2MRuntime:
             device = torch.device("cpu")
             pipeline.load_in_demo(
                 self.ckpt_name,
-                build_text_encoder=not self.skip_text,
+                build_text_encoder=build_text_encoder_now,
                 allow_empty_ckpt=allow_empty_ckpt,
             )
             pipeline.to(device)
@@ -144,7 +156,7 @@ class T2MRuntime:
                 )
                 p.load_in_demo(
                     self.ckpt_name,
-                    build_text_encoder=not self.skip_text,
+                    build_text_encoder=build_text_encoder_now,
                     allow_empty_ckpt=allow_empty_ckpt,
                 )
                 p.to(torch.device(f"cuda:{gid}"))
@@ -337,12 +349,67 @@ class T2MRuntime:
                 output_dir=output_dir,
                 fbx_filename=output_filename,
             )
-            return html_content, fbx_files, model_output
+            result = (html_content, fbx_files, model_output)
         elif output_format == "dict":
             # Return HTML content and empty list for fbx_files when using dict format
-            return html_content, [], model_output
+            result = (html_content, [], model_output)
         else:
             raise ValueError(f">>> Invalid output format: {output_format}")
+        
+        # 生成完成后清理 GPU 缓存（可通过环境变量控制）
+        if os.environ.get("AUTO_CLEAN_GPU_CACHE", "1") == "1":
+            self._clean_gpu_cache()
+        
+        return result
+    
+    def _clean_gpu_cache(self):
+        """清理 GPU 缓存，释放显存"""
+        try:
+            # 检查是否需要彻底卸载模型
+            if os.environ.get("AUTO_UNLOAD_MODEL", "0") == "1":
+                self._unload_model()
+            
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                # 打印显存使用情况
+                for i in range(torch.cuda.device_count()):
+                    allocated = torch.cuda.memory_allocated(i) / 1024**3
+                    reserved = torch.cuda.memory_reserved(i) / 1024**3
+                    print(f">>> GPU {i}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        except Exception as e:
+            print(f">>> Warning: Failed to clean GPU cache: {e}")
+    
+    def _unload_model(self):
+        """彻底卸载模型，释放所有显存（下次生成需重新加载）"""
+        try:
+            print(">>> Unloading model to free GPU memory...")
+            # 卸载 pipeline 模型
+            if hasattr(self, 'pipelines') and self.pipelines:
+                for i, pipeline in enumerate(self.pipelines):
+                    if pipeline is not None:
+                        pipeline.to('cpu')
+                        del self.pipelines[i]
+                self.pipelines = []
+            
+            # 卸载文本编码器
+            if hasattr(self, 'text_encoder') and self.text_encoder is not None:
+                if hasattr(self.text_encoder, 'to'):
+                    self.text_encoder.to('cpu')
+                del self.text_encoder
+                self.text_encoder = None
+            
+            # 标记为未加载状态
+            self._loaded = False
+            
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            print(">>> Model unloaded successfully")
+        except Exception as e:
+            print(f">>> Warning: Failed to unload model: {e}")
 
     def _generate_html_content(
         self,

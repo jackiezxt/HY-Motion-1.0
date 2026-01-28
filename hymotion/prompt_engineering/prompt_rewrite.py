@@ -2,10 +2,12 @@
 import base64
 import concurrent.futures
 import datetime
+import gc
 import hashlib
 import hmac
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -13,6 +15,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
+import httpx
 import torch
 from openai import OpenAI
 from requests import exceptions as req_exc
@@ -55,10 +58,21 @@ class OpenAIChatApi:
     def __init__(self, config: ApiConfig) -> None:
         self.logger = logging.getLogger(__name__)
         self.config = config
-        self.client = OpenAI(
-            api_key=self.config.apikey,
-            base_url=self.config.host,
-        )
+        
+        # 配置代理（从环境变量读取）
+        proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+        if proxy_url:
+            http_client = httpx.Client(proxy=proxy_url, timeout=60.0)
+            self.client = OpenAI(
+                api_key=self.config.apikey,
+                base_url=self.config.host,
+                http_client=http_client,
+            )
+        else:
+            self.client = OpenAI(
+                api_key=self.config.apikey,
+                base_url=self.config.host,
+            )
 
     def call_data_eval(self, data: Union[str, Dict[str, Any]]):
         if isinstance(data, dict) and "messages" in data:
@@ -245,26 +259,39 @@ class ResponseParser:
 
 class PromptRewriter:
     def __init__(
-        self, host: Optional[str] = None, model_path: Optional[str] = None, parser: Optional[ResponseParser] = None
+        self, host: Optional[str] = None, model_path: Optional[str] = None, parser: Optional[ResponseParser] = None,
+        lazy_load: bool = True  # 默认启用懒加载
     ):
         self.parser = parser or ResponseParser()
         self.logger = logging.getLogger(__name__)
-        self.host = host
-        if host:
+        
+        # 优先从环境变量读取 API 配置
+        self.host = host or os.environ.get("PROMPT_API_HOST")
+        api_key = os.environ.get("PROMPT_API_KEY", "EMPTY")
+        api_model = os.environ.get("PROMPT_API_MODEL", "qwen-plus")  # 通义千问默认模型
+        
+        if self.host:
+            print(f">>> [API MODE] Using remote API: {self.host}, model: {api_model}")
             self.api = OpenAIChatApi(
                 ApiConfig(
-                    host=host,
+                    host=self.host,
                     user="",
-                    apikey="EMPTY",
-                    model="Qwen3-30B-A3B-SFT",
+                    apikey=api_key,
+                    model=api_model,
                     api_version="",
                 )
             )
+            self.model = None
+            self.tokenizer = None
         else:
             self.model_path = model_path or "./ckpts/Text2MotionPrompter"
             self.tokenizer = None
             self.model = None
-            self._load_model()
+            # 懒加载：首次调用时才加载模型
+            if not lazy_load:
+                self._load_model()
+            else:
+                print(f">>> [LAZY MODE] PromptRewriter model will be loaded on first use")
 
     def _load_model(self):
         if self.model is None:
@@ -278,42 +305,71 @@ class PromptRewriter:
             )
             self.model.eval()
 
+    def _unload_model(self):
+        """卸载模型，释放显存"""
+        if self.model is not None:
+            print(f">>> Unloading prompter model to free VRAM...")
+            del self.model
+            self.model = None
+            if self.tokenizer is not None:
+                del self.tokenizer
+                self.tokenizer = None
+            # 强制清理 GPU 显存
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print(f">>> Prompter model unloaded, VRAM freed")
+
     def rewrite_prompt_and_infer_time(
         self,
         text: str,
         prompt_format: str = REWRITE_AND_INFER_TIME_PROMPT_FORMAT,
         retry_config: Optional[RetryConfig] = None,
+        auto_unload: bool = None,  # 使用完后自动卸载模型
     ) -> Tuple[float, str]:
-        if self.host:
-            self.logger.info("Start rewriting prompt...")
-            try:
-                result, cost, elapsed = self.parser.call_data_eval_with_retry(
-                    self.api, prompt_format.format(text), retry_config
+        # 检查环境变量决定是否自动卸载
+        if auto_unload is None:
+            auto_unload = os.environ.get("AUTO_UNLOAD_PROMPTER", "1") == "1"
+        
+        # 懒加载：首次调用时加载模型
+        if not self.host and self.model is None:
+            self._load_model()
+        
+        try:
+            if self.host:
+                self.logger.info("Start rewriting prompt...")
+                try:
+                    result, cost, elapsed = self.parser.call_data_eval_with_retry(
+                        self.api, prompt_format.format(text), retry_config
+                    )
+                    self.logger.info(f"Rewriting completed - cost: {cost:.6f}, time: {elapsed:.2f}s")
+                    return round(float(result["duration"]) / 30.0, 2), result["short_caption"]
+
+                except Exception as e:
+                    self.logger.error(f"Prompt rewriting failed: {e}")
+                    raise
+            else:
+                messages = [{"role": "user", "content": prompt_format.format(text)}]
+                full_prompt = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
                 )
-                self.logger.info(f"Rewriting completed - cost: {cost:.6f}, time: {elapsed:.2f}s")
-                return round(float(result["duration"]) / 30.0, 2), result["short_caption"]
+                inputs = self.tokenizer([full_prompt], return_tensors="pt").to(self.model.device)
+                with torch.no_grad():
+                    outputs = self.model.generate(**inputs, max_new_tokens=8192)
+                response = self.tokenizer.decode(outputs[0][inputs.input_ids.shape[1] :].tolist(), skip_special_tokens=True)
 
-            except Exception as e:
-                self.logger.error(f"Prompt rewriting failed: {e}")
-                raise
-        else:
-            messages = [{"role": "user", "content": prompt_format.format(text)}]
-            full_prompt = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            inputs = self.tokenizer([full_prompt], return_tensors="pt").to(self.model.device)
-            with torch.no_grad():
-                outputs = self.model.generate(**inputs, max_new_tokens=8192)
-            response = self.tokenizer.decode(outputs[0][inputs.input_ids.shape[1] :].tolist(), skip_special_tokens=True)
-
-            try:
-                json_str = re.search(r"\{.*\}", response, re.DOTALL).group()
-                result = json.loads(json_str)
-                return round(float(result["duration"]) / 30.0, 2), result["short_caption"]
-            except:
-                return 5.0, text
+                try:
+                    json_str = re.search(r"\{.*\}", response, re.DOTALL).group()
+                    result = json.loads(json_str)
+                    return round(float(result["duration"]) / 30.0, 2), result["short_caption"]
+                except:
+                    return 5.0, text
+        finally:
+            # 使用完后自动卸载模型释放显存
+            if auto_unload and not self.host:
+                self._unload_model()
 
 
 if __name__ == "__main__":

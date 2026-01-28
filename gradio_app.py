@@ -16,6 +16,19 @@ import gradio as gr
 
 def try_to_download_model():
     repo_id = "tencent/HY-Motion-1.0"
+    
+    # 优先使用已存在的本地模型
+    local_models = [
+        "./ckpts/tencent/HY-Motion-1.0",      # 完整版
+        "./ckpts/tencent/HY-Motion-1.0-Lite", # Lite 版
+    ]
+    for local_path in local_models:
+        config_path = os.path.join(local_path, "config.yml")
+        if os.path.exists(config_path):
+            print(f">>> Found local model: {local_path}")
+            return local_path
+    
+    # 如果本地没有，则下载 Lite 版本
     target_folder = "HY-Motion-1.0-Lite"
     print(f">>> start download ", repo_id, target_folder)
     local_dir = snapshot_download(repo_id=repo_id, allow_patterns=f"{target_folder}/*", local_dir="./ckpts/tencent")
@@ -837,9 +850,10 @@ def create_demo(final_model_path):
     class Args:
         model_path = final_model_path
         output_dir = "output/gradio"
-        prompt_engineering_host = os.environ.get("PROMPT_HOST", None)
+        # 支持两种环境变量名：PROMPT_API_HOST (新) 和 PROMPT_HOST (旧)
+        prompt_engineering_host = os.environ.get("PROMPT_API_HOST") or os.environ.get("PROMPT_HOST")
         prompt_engineering_model_path = os.environ.get("PROMPT_MODEL_PATH", None)
-        disable_prompt_engineering = os.environ.get("DISABLE_PROMPT_ENGINEERING", False)
+        disable_prompt_engineering = os.environ.get("DISABLE_PROMPT_ENGINEERING", "").lower() in ("true", "1", "yes")
 
     args = Args()
     _global_args = args  # Set global args for lazy loading
@@ -910,4 +924,10 @@ if __name__ == "__main__":
     # Create demo at module level for Hugging Face Spaces
     final_model_path = try_to_download_model()
     demo = create_demo(final_model_path)
-    demo.launch()
+    # 从环境变量读取端口，默认 7860
+    port = int(os.environ.get("GRADIO_SERVER_PORT", "7860"))
+    demo.launch(
+        server_name="0.0.0.0",  # 允许外部访问
+        server_port=port,
+        share=False,
+    )
