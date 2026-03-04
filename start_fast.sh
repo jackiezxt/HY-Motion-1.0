@@ -43,8 +43,12 @@ export AUTO_UNLOAD_PROMPTER=1
 #    如果不需要自动重写 Prompt 和时长预测，取消下面的注释
 # export DISABLE_PROMPT_ENGINEERING=True
 
-# 7. 指定 GPU（可选）
-# export CUDA_VISIBLE_DEVICES=0
+# 7. 自动选择显存最空闲的 GPU
+if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
+    BEST_GPU=$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits | sort -t',' -k2 -nr | head -1 | cut -d',' -f1 | tr -d ' ')
+    export CUDA_VISIBLE_DEVICES=$BEST_GPU
+    echo "Auto-selected GPU $BEST_GPU (most free memory)"
+fi
 
 # 8. 优化 PyTorch 显存分配
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
