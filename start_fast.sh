@@ -27,7 +27,11 @@ export HF_HUB_OFFLINE=1
 #    这可以让 UI 快速启动，模型在用户点击生成时才加载
 export LAZY_TEXT_ENCODER=1
 
-# 4. 使用通义千问 API 进行 Prompt 重写（推荐！省显存）
+# 4. 网络代理（服务器访问外网 API 需要）
+export HTTPS_PROXY="${HTTPS_PROXY:-http://10.236.255.12:18888}"
+export HTTP_PROXY="${HTTP_PROXY:-http://10.236.255.12:18888}"
+
+# 5. 使用通义千问 API 进行 Prompt 重写（推荐！省显存）
 #    设置后将使用远程 API 代替本地 LLM，本机 0 显存占用
 #    获取 API Key: https://dashscope.console.aliyun.com/
 export PROMPT_API_HOST="https://dashscope.aliyuncs.com/compatible-mode/v1"
