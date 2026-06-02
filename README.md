@@ -6,7 +6,7 @@
 </p>
 
 <div align="center">
-  <a href="https://hunyuan.tencent.com/motion" target="_blank">
+  <a href="https://aistudio.tencent.com/motion" target="_blank">
     <img src="https://img.shields.io/badge/Official%20Site-333399.svg?logo=homepage" height="22px" alt="Official Site">
   </a>
   <a href="https://github.com/Tencent-Hunyuan/HY-Motion-1.0" target="_blank">
@@ -36,6 +36,7 @@
 
 
 ## 🔥 News
+- **Jan 29, 2026**: 📊 We released the evaluation prompts and code for **SSAE** (Structured Semantic Alignment Evaluation), a VLM-based metric designed to assess the semantic alignment of generated videos. Check the `ssae` directory for usage details!
 - **Dec 30, 2025**: 🤗 We released the inference code and pretrained models of [HY-Motion 1.0](https://huggingface.co/tencent/HY-Motion-1.0). Please give it a try via our [HuggingFace Space](https://huggingface.co/spaces/tencent/HY-Motion-1.0) and our [Official Site](https://hunyuan.tencent.com/motion)!
 
 
