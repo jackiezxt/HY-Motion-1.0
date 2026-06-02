@@ -31,12 +31,12 @@ export LAZY_TEXT_ENCODER=1
 export HTTPS_PROXY="${HTTPS_PROXY:-http://10.236.255.12:18888}"
 export HTTP_PROXY="${HTTP_PROXY:-http://10.236.255.12:18888}"
 
-# 5. 使用通义千问 API 进行 Prompt 重写（推荐！省显存）
+# 5. 使用 Nova LLM Proxy 进行 Prompt 重写（推荐！省显存）
 #    设置后将使用远程 API 代替本地 LLM，本机 0 显存占用
-#    获取 API Key: https://dashscope.console.aliyun.com/
-export PROMPT_API_HOST="https://dashscope.aliyuncs.com/compatible-mode/v1"
-export PROMPT_API_KEY="${PROMPT_API_KEY:-sk-9c0cd4439fe4425e9f968833d9688b3d}"  # 请替换为你的 API Key
-export PROMPT_API_MODEL="qwen-plus"  # 可选: qwen-turbo, qwen-plus, qwen-max
+#    获取 API Key: https://console.tapsvc.com/nova/#/ai-gateway
+export PROMPT_API_HOST="${PROMPT_API_HOST:-https://llm-proxy.tapsvc.com/v1}"
+export PROMPT_API_KEY="${PROMPT_API_KEY}"  # 从 .env 或环境变量注入，禁止硬编码
+export PROMPT_API_MODEL="${PROMPT_API_MODEL:-qwen/qwen3.6-plus}"
 
 # 5. PromptRewriter 显存管理（使用 API 时可忽略）
 #    设为 1：Rewrite 完成后自动卸载 PromptRewriter 模型，释放显存给动作生成
